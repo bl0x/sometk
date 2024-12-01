@@ -1,8 +1,11 @@
 #!/usr/bin/env python3
 import numpy as np
+import logging
+import json
 
 import tkinter as tk
 from tkinter import ttk
+from tkinter import scrolledtext
 
 root = tk.Tk()
 
@@ -28,6 +31,27 @@ def inside_bbox(bbox, pos):
 			 bbox[3] > pos[1]]
 	)
 
+class WidgetLogger(logging.Handler):
+    def __init__(self, widget):
+        logging.Handler.__init__(self)
+        self.setLevel(logging.WARNING)
+        self.widget = widget
+        self.widget.config(state='disabled')
+        self.widget.tag_config("INFO", foreground="black")
+        self.widget.tag_config("DEBUG", foreground="grey")
+        self.widget.tag_config("WARNING", foreground="orange")
+        self.widget.tag_config("ERROR", foreground="red")
+        self.widget.tag_config("CRITICAL", foreground="red", underline=1)
+
+        self.red = self.widget.tag_configure("red", foreground="red")
+    def emit(self, record):
+        self.widget.config(state='normal')
+        # Append message (record) to the widget
+        self.widget.insert(tk.END, f"{record.message}\n", record.levelname)
+        self.widget.see(tk.END)  # Scroll to the bottom
+        self.widget.config(state='disabled') 
+        self.widget.update() # Refresh the widget
+
 class App:
 	def __init__(self):
 		self.size = np.array([10,10])
@@ -36,26 +60,59 @@ class App:
 		self.markers = []
 		self.dragged = None
 		self.drag_origin = (0,0)
+		self.log_level = tk.StringVar()
+		self.log_level.set("WARNING")
+		self.MARKERS_FILE = ".app_markers"
+		self.restore()
 
-	def add_marker(self, pos, size):
-		m = Marker(c, len(self.markers), pos, size)
+	def load_markers(self):
+		try:
+			with open(self.MARKERS_FILE, "r") as f:
+				data = json.load(f)
+				for m in data["markers"]:
+					self.add_marker(m["pos"],
+					 np.array(m["size"]),
+					 _id=m["id"])
+		except E:
+			print(f"oops: {E}")
+			pass
+
+	def restore(self):
+		self.load_markers()
+
+	def save_markers(self):
+		with open(self.MARKERS_FILE, "w") as f:
+			data = {"markers": []}
+			for m in self.markers:
+				data["markers"].append(m.dict())
+			json.dump(data, f)
+
+	def shutdown(self):
+		self.save_markers()
+
+	def add_marker(self, pos, size, _id=None):
+		if _id is None:
+			_id = len(self.markers)
+		m = Marker(c, _id, pos, size)
 		self.markers.append(m)
 
 	def select_marker(self, pos):
 		_id = c.find_closest(pos[0], pos[1])
 		tags = c.gettags(_id)
-		# print(f"clicked on {tags}")
+		logging.debug(f"clicked on {tags}")
 		for m in self.markers:
 			if len(tags) > 1 and m.tags[1] == tags[1]:
 				if inside_bbox(m.bbox, pos):
-					# print(f'selecting {tags}')
+					logging.info(f'selecting {tags}')
 					m.select(True)
 				else:
+					logging.debug(f'marker "{m.tags}" not inside bbox')
+					logging.debug(f' bbox: {m.bbox}')
+					logging.debug(f' pos : {pos}')
 					m.select(False)
 			else:
+				logging.debug(f'marker "{m.tags}" no match for {tags}')
 				m.select(False)
-
-a = App()
 
 def bbox_from_pos(pos, size):
 	return pos[0]-size[0], pos[1]-size[1], pos[0]+size[0], pos[1]+size[1]
@@ -66,11 +123,21 @@ class Marker():
 		self.id = i
 		self.tags = ('marker', self.maketag(i))
 		self.pos = pos
-		self.size = size
+		self.size = size.copy()
 		self.items = []
 		self.text = None
 		self.selected = False
 		self.create()
+
+	@classmethod
+	def from_dict(cls, canvas, data):
+		return cls(canvas, data["id"], data["pos"], data["size"])
+
+	def dict(self):
+		return {"id": self.id,
+		  "pos": list(self.pos),
+		  "size": self.size.tolist()
+		}
 
 	def delete(self):
 		for it in self.items:
@@ -99,7 +166,7 @@ class Marker():
 		tpos = urpos
 		self.text = c.create_text(tpos, text=str(self.id), tags=self.tags)
 		self.items.append(self.text)
-		# bouding box to show when selected
+		# bounding box to show when selected
 		self.bbox = c.bbox(self.tags[1])
 		pad = 2
 		self.bbox = (
@@ -120,6 +187,8 @@ class Marker():
 		else:
 			self.canvas.itemconfigure(self.outer, state=tk.HIDDEN)
 			self.selected = False
+
+a = App()
 
 def toggle_select(event):
 	a.select = not a.select
@@ -144,7 +213,7 @@ def resize(event, only_x=False):
 		if only_x:
 			break
 	motion(event)
-	# print(a.size)
+	logging.debug(a.size)
 
 def scroll_start(event):
 	c.config(yscrollincrement=3)
@@ -184,7 +253,7 @@ def delete_closest_marker(event):
 	if len(a.markers) != 0:
 		_id = c.find_closest(x, y)
 		tags = c.gettags(_id)
-		# print(f"deleting {tags}")
+		logging.info(f"deleting {tags}")
 		for i,m in enumerate(a.markers):
 			if len(tags) > 1 and m.tags[1] == tags[1]:
 				_m = a.markers.pop(i)
@@ -196,21 +265,24 @@ def delete_closest_marker(event):
 def drag_start(x, y):
 	for m in a.markers:
 		if m.selected:
-			# print(f"drag_start {m.tags}")
-			a.dragged = m.tags[1]
+			logging.info(f"drag_start {m.tags}")
+			a.dragged = m
 			a.drag_origin = (x,y)
-		# print(m.tags, m.selected)
+		logging.debug(f"{m.tags}, {m.selected}")
 
 def drag_stop(event):
-	a.dragged = None
-	a.drag_origin = (0,0)
+	if a.dragged is not None:
+		a.dragged.bbox = c.bbox(a.dragged.tags[1])
+		a.dragged = None
+		a.drag_origin = (0,0)
 
 def drag(event):
-	x = c.canvasx(event.x)
-	y = c.canvasy(event.y)
-	delta = (x - a.drag_origin[0], y - a.drag_origin[1])
-	c.move(a.dragged, delta[0], delta[1])
-	a.drag_origin = (x,y)
+	if a.dragged is not None:
+		x = c.canvasx(event.x)
+		y = c.canvasy(event.y)
+		delta = (x - a.drag_origin[0], y - a.drag_origin[1])
+		c.move(a.dragged.tags[1], delta[0], delta[1])
+		a.drag_origin = (x,y)
 
 c.bind("<Motion>", motion)
 c.bind("<Button-1>", click_action)
@@ -231,11 +303,36 @@ c.grid(column=0, row=0, sticky=(tk.N, tk.W, tk.E, tk.S))
 h.grid(column=0, row=1, sticky=(tk.W, tk.E))
 v.grid(column=1, row=0, sticky=(tk.N, tk.S))
 
+st = scrolledtext.ScrolledText(root, state='disabled')
+st.grid(column=0, row=2, sticky=(tk.W), columnspan=2)
+
+level_l  = tk.Label(root, text="Log level:")
+level_l.grid(column=0, row=3)
+
+def change_log_level():
+	wl.setLevel(a.log_level.get())
+	print(a.log_level.get())
+
+level_cb = ttk.Combobox(root, textvariable=a.log_level)
+level_cb['values'] = ("DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL")
+level_cb['state'] = 'readonly'
+level_cb.bind('<<ComboboxSelected>>', lambda _: change_log_level())
+level_cb.grid(column=1, row=3)
+
+logging.basicConfig(level=logging.DEBUG, format='%(message)s')
+logger = logging.getLogger()
+wl = WidgetLogger(st)
+logger.addHandler(wl)
+
 root.grid_columnconfigure(0, weight=1)
 root.grid_rowconfigure(0, weight=1)
 
+def shutdown():
+	a.shutdown()
+	root.destroy()
+
 root.bind_all("s", toggle_select)
-root.bind_all("q", lambda _: root.destroy())
+root.bind_all("q", lambda _: shutdown())
 root.bind_all("d", lambda _: delete_last_marker())
 root.bind_all("D", delete_closest_marker)
 root.mainloop()
