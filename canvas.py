@@ -52,6 +52,46 @@ class WidgetLogger(logging.Handler):
         self.widget.config(state='disabled') 
         self.widget.update() # Refresh the widget
 
+class MarkerList():
+	def __init__(self, app):
+		self.app = app
+		self.window = tk.Toplevel()
+		self.window.title("Marker list")
+		columns = ("ID", "Position", "Size")
+		self.tw = ttk.Treeview(self.window, columns=columns)
+		self.tw.column("ID", width=30)
+		self.tw.column("Position", width=150)
+		for c in columns:
+			self.tw.heading(c, text=c)
+		self.tw['show'] = 'headings'
+		self.tw.grid(row=0, column=0, sticky="nesw")
+		self.sb = ttk.Scrollbar(self.window, orient="vertical",
+						  command=self.tw.yview)
+		self.tw.configure(yscrollcommand=self.sb.set)
+		self.tw.bind('<Control-a>', lambda _: self.tw.selection_add(self.tw.get_children()))
+		self.tw.bind('<Control-c>', lambda _: self.copy_markers())
+		self.sb.grid(row=0, column=1, sticky="ns")
+		self.copy = ttk.Button(self.window, text="Copy", command=self.copy_markers)
+		self.copy.grid(row=1, column=0, sticky="we")
+		self.window.columnconfigure(0, weight=1)
+		self.window.rowconfigure(0, weight=1)
+		## done
+		self.window.withdraw()
+		self.update()
+	def copy_markers(self):
+		root.clipboard_clear()
+		root.clipboard_append("# marker_id pos_x pos_y size_x size_y\n")
+		for m in self.app.markers:
+			root.clipboard_append(f"{m.id} {m.pos[0]} {m.pos[1]} {m.size[0]} {m.size[1]}\n") 
+	def clear(self):
+		self.tw.delete(*self.tw.get_children())
+	def add(self):
+		for m in self.app.markers:
+			self.tw.insert('', tk.END, values=(m.id, str(m.pos), str(m.size)))
+	def update(self):
+		self.clear()
+		self.add()
+
 class App:
 	def __init__(self):
 		self.size = np.array([10,10])
@@ -63,7 +103,23 @@ class App:
 		self.log_level = tk.StringVar()
 		self.log_level.set("WARNING")
 		self.MARKERS_FILE = ".app_markers"
+		self.mlist = MarkerList(self)
 		self.restore()
+
+	def show_marker_list(self, event):
+		if self.mlist.window.state() == 'normal':
+			self.mlist.window.withdraw()
+		else:
+			self.mlist.window.state('normal')
+
+	def show_edit_menu(self, event):
+		m = tk.Menu(root, tearoff=0)
+		m.add_command(label = "Copy markers", underline=0,
+				command=self.mlist.copy_markers)
+		try:
+			m.tk_popup(event.x_root, event.y_root)
+		finally:
+			m.grab_release()
 
 	def load_markers(self):
 		try:
@@ -95,6 +151,41 @@ class App:
 			_id = len(self.markers)
 		m = Marker(c, _id, pos, size)
 		self.markers.append(m)
+		self.mlist.update()
+
+	def click_action(self, event):
+		x = c.canvasx(event.x)
+		y = c.canvasy(event.y)
+		if self.select:
+			self.place_marker(x,y)
+		else:
+			self.select_marker(x,y)
+			self.drag_start(x,y)
+
+	def place_marker(self, x,y):
+		self.add_marker((x,y), self.size)
+
+	def delete_last_marker(self):
+		if len(self.markers) != 0:
+			m = self.markers.pop()
+			m.delete()
+			self.mlist.update()
+
+	def delete_closest_marker(self, event):
+		x = c.canvasx(event.x)
+		y = c.canvasy(event.y)
+		if len(self.markers) != 0:
+			_id = c.find_closest(x, y)
+			tags = c.gettags(_id)
+			logging.info(f"deleting {tags}")
+			for i,m in enumerate(self.markers):
+				if len(tags) > 1 and m.tags[1] == tags[1]:
+					_m = self.markers.pop(i)
+					_m.delete()
+					break
+			for i,m in enumerate(self.markers):
+				m.set_id(i)
+		self.mlist.update()
 
 	def select_marker(self, pos):
 		_id = c.find_closest(pos[0], pos[1])
@@ -227,41 +318,6 @@ def scroll(event):
 	c.yview('scroll', dy, 'units')
 	a.scroll_start = (event.x, event.y)
 
-def click_action(event):
-	x = c.canvasx(event.x)
-	y = c.canvasy(event.y)
-	if a.select:
-		place_marker(x,y)
-	else:
-		select_marker(x,y)
-		drag_start(x,y)
-
-def select_marker(x,y):
-	a.select_marker((x,y))
-
-def place_marker(x,y):
-	a.add_marker((x,y), a.size)
-
-def delete_last_marker():
-	if len(a.markers) != 0:
-		m = a.markers.pop()
-		m.delete()
-
-def delete_closest_marker(event):
-	x = c.canvasx(event.x)
-	y = c.canvasy(event.y)
-	if len(a.markers) != 0:
-		_id = c.find_closest(x, y)
-		tags = c.gettags(_id)
-		logging.info(f"deleting {tags}")
-		for i,m in enumerate(a.markers):
-			if len(tags) > 1 and m.tags[1] == tags[1]:
-				_m = a.markers.pop(i)
-				_m.delete()
-				break
-		for i,m in enumerate(a.markers):
-			m.set_id(i)
-
 def drag_start(x, y):
 	for m in a.markers:
 		if m.selected:
@@ -285,7 +341,7 @@ def drag(event):
 		a.drag_origin = (x,y)
 
 c.bind("<Motion>", motion)
-c.bind("<Button-1>", click_action)
+c.bind("<Button-1>", a.click_action)
 c.bind("<MouseWheel>", resize)
 c.bind("<Button-4>", resize)
 c.bind("<Button-5>", resize)
@@ -333,6 +389,8 @@ def shutdown():
 
 root.bind_all("s", toggle_select)
 root.bind_all("q", lambda _: shutdown())
-root.bind_all("d", lambda _: delete_last_marker())
-root.bind_all("D", delete_closest_marker)
+root.bind_all("d", lambda _: a.delete_last_marker())
+root.bind_all("D", a.delete_closest_marker)
+root.bind_all("m", a.show_marker_list)
+root.bind_all("e", a.show_edit_menu)
 root.mainloop()
