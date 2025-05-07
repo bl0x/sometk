@@ -159,8 +159,8 @@ class App:
 		if self.select:
 			self.place_marker(x,y)
 		else:
-			self.select_marker(x,y)
-			self.drag_start(x,y)
+			self.select_marker((x,y))
+			drag_start(x,y)
 
 	def place_marker(self, x,y):
 		self.add_marker((x,y), self.size)
@@ -389,8 +389,8 @@ def shutdown():
 
 root.bind_all("s", toggle_select)
 root.bind_all("q", lambda _: shutdown())
-root.bind_all("d", lambda _: a.delete_last_marker())
-root.bind_all("D", a.delete_closest_marker)
+root.bind_all("D", lambda _: a.delete_last_marker())
+root.bind_all("d", a.delete_closest_marker)
 root.bind_all("m", a.show_marker_list)
 root.bind_all("e", a.show_edit_menu)
 root.mainloop()
